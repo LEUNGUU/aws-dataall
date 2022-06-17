@@ -9,7 +9,7 @@
     "git_branch": "main",
     "git_release": false,
     "quality_gate": true,
-    "resource_prefix": "dataalltest",
+    "resource_prefix": "dataall",
     "DeploymentEnvironments": [
       {
         "envname": "dev",
