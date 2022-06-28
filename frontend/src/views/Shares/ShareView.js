@@ -34,6 +34,7 @@ import {
 import { LoadingButton } from '@mui/lab';
 import * as PropTypes from 'prop-types';
 import { useSnackbar } from 'notistack';
+import { useNavigate } from 'react-router';
 import useSettings from '../../hooks/useSettings';
 import ChevronRightIcon from '../../icons/ChevronRight';
 import useClient from '../../hooks/useClient';
@@ -60,6 +61,7 @@ function ShareViewHeader(props) {
     client,
     dispatch,
     enqueueSnackbar,
+    navigate,
     fetchItem,
     fetchItems,
     loading
@@ -104,7 +106,7 @@ function ShareViewHeader(props) {
         },
         variant: 'success'
       });
-      await fetchItem();
+      navigate('/console/shares');
     } else {
       dispatch({ type: SET_ERROR, error: response.errors[0].message });
     }
@@ -289,6 +291,7 @@ ShareViewHeader.propTypes = {
   client: PropTypes.any,
   dispatch: PropTypes.any,
   enqueueSnackbar: PropTypes.any,
+  navigate: PropTypes.any,
   fetchItem: PropTypes.func,
   fetchItems: PropTypes.func,
   loading: PropTypes.bool
@@ -359,6 +362,7 @@ const ShareView = () => {
   const [share, setShare] = useState(null);
   const [filter, setFilter] = useState(Defaults.DefaultFilter);
   const [sharedItems, setSharedItems] = useState(PagedResponseDefault);
+  const navigate = useNavigate();
   const dispatch = useDispatch();
   const params = useParams();
   const client = useClient();
@@ -447,6 +451,7 @@ const ShareView = () => {
             share={share}
             client={client}
             dispatch={dispatch}
+            navigate={navigate}
             enqueueSnackbar={enqueueSnackbar}
             fetchItem={fetchItem}
             fetchItems={fetchShareItems}

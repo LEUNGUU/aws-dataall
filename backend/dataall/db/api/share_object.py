@@ -451,7 +451,7 @@ class ShareObject:
         share: models.ShareObject = ShareObject.get_share_by_uri(session, uri)
         shared_items = session.query(models.ShareObjectItem).filter(
             models.ShareObjectItem.shareUri == share.shareUri
-        )
+        ).all()
         if shared_items:
             raise exceptions.SharedItemsFound(
                 action="Delete Share Object",
