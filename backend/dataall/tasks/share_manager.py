@@ -12,6 +12,7 @@ from sqlalchemy import and_
 from .. import db
 from ..aws.handlers.glue import Glue
 from ..aws.handlers.s3 import S3
+from ..aws.handlers.kms import KMS
 from ..aws.handlers.quicksight import Quicksight
 from ..aws.handlers.sts import SessionHelper
 from ..db import get_engine
@@ -169,10 +170,10 @@ class ShareManager:
             access_point_name = share_item.S3AccessPointName
             bucket_name = folder.S3BucketName
             target_account_id = target_environment.AwsAccountId
+            source_env_admin = source_env_group.environmentIAMRoleArn
+            dataset_admin = dataset.IAMDatasetAdminRoleArn
             target_env_admin = target_env_group.environmentIAMRoleName
-            folder_name = folder.S3Prefix
-            source_env_admin = source_env_group.environmentIAMRoleName
-            dataset_admin = SessionHelper.extract_name_from_role_arn(dataset.IAMDatasetAdminRoleArn)
+            s3_prefix = folder.S3Prefix
 
             try:
                 ShareManager.manage_access_point_and_bucket_policy(
@@ -181,8 +182,15 @@ class ShareManager:
                     bucket_name,
                     access_point_name,
                     target_account_id,
-                    folder_name,
                     source_env_admin,
+                )
+
+                ShareManager.manage_target_role_access_policy(
+                    bucket_name,
+                    access_point_name,
+                    target_account_id,
+                    target_env_admin,
+                    dataset,
                 )
                 ShareManager.manage_access_point_policy(
                     dataset_admin,
@@ -191,8 +199,15 @@ class ShareManager:
                     target_account_id,
                     source_env_admin,
                     target_env_admin,
-                    folder_name,
+                    s3_prefix,
                     dataset,
+                )
+
+                ShareManager.update_dataset_bucket_key_policy(
+                    source_account_id,
+                    target_account_id,
+                    target_env_admin,
+                    dataset
                 )
 
                 ShareManager.update_share_item_status(
@@ -977,19 +992,15 @@ class ShareManager:
         bucket_name: str,
         access_point_name: str,
         target_account_id: str,
-        folder_name: str,
         source_env_admin: str,
     ):
         if not S3.get_bucket_access_point(source_account_id, access_point_name):
-            access_point = S3.create_bucket_access_point(source_account_id, bucket_name, access_point_name)
+            S3.create_bucket_access_point(source_account_id, bucket_name, access_point_name)
             bucket_policy = json.loads(S3.get_bucket_policy(source_account_id, bucket_name))
-            exceptions_roleId = [
-                f'{item}:*' for item in [
-                    SessionHelper.get_role_id(source_account_id, 'dataallPivotRole'),
-                    SessionHelper.get_role_id(source_account_id, dataset_admin),
-                    SessionHelper.get_role_id(source_account_id, source_env_admin)
-                ]
-            ]
+            exceptions_roleId = [f'{item}:*' for item in SessionHelper.get_role_ids(
+                source_account_id,
+                [dataset_admin, source_env_admin, SessionHelper.get_delegation_role_arn(source_account_id)]
+            )]
             allow_owner_access = {
                 "Effect": "Allow",
                 "Principal": "*",
@@ -1014,16 +1025,63 @@ class ShareManager:
                 ],
                 "Condition": {
                     "StringEquals": {
-                        "s3:DataAccessPointArn": f"{access_point['AccessPointArn']}"
+                        "s3:DataAccessPointAccount": f"{source_account_id}"
                     }
                 }
             }
             bucket_policy['Statement'].append(allow_owner_access)
             bucket_policy['Statement'].append(delegated_to_accesspoint)
             S3.create_bucket_policy(source_account_id, bucket_name, json.dumps(bucket_policy))
-            return True
+
+    @staticmethod
+    def manage_target_role_access_policy(
+        bucket_name: str,
+        access_point_name: str,
+        target_account_id: str,
+        target_env_admin: str,
+        dataset: models.Dataset,
+    ):
+        # target_env_admin = SessionHelper.extract_name_from_role_arn(target_env_admin)
+        existing_policy = S3.get_target_role_policy(
+            target_account_id,
+            target_env_admin,
+            "targetDatasetAccessControlPolicy",
+        )
+        if existing_policy:  # type dict
+            if bucket_name not in ",".join(existing_policy["Statement"][0]["Resource"]):
+                target_resources = [
+                    f"arn:aws:s3:::{bucket_name}",
+                    f"arn:aws:s3:::{bucket_name}/*",
+                    f"arn:aws:s3:{dataset.region}:{dataset.AwsAccountId}:accesspoint/{access_point_name}",
+                    f"arn:aws:s3:{dataset.region}:{dataset.AwsAccountId}:accesspoint/{access_point_name}/*"
+                ]
+                policy = existing_policy["Statement"][0]["Resource"].extend(target_resources)
+            else:
+                return
         else:
-            return False
+            policy = {
+                "Version": "2012-10-17",
+                "Statement": [
+                    {
+                        "Effect": "Allow",
+                        "Action": [
+                            "s3:*"
+                        ],
+                        "Resource": [
+                            f"arn:aws:s3:::{bucket_name}",
+                            f"arn:aws:s3:::{bucket_name}/*",
+                            f"arn:aws:s3:{dataset.region}:{dataset.AwsAccountId}:accesspoint/{access_point_name}",
+                            f"arn:aws:s3:{dataset.region}:{dataset.AwsAccountId}:accesspoint/{access_point_name}/*"
+                        ]
+                    }
+                ]
+            }
+        S3.update_target_role_policy(
+            target_account_id,
+            target_env_admin,
+            "targetDatasetAccessControlPolicy",
+            json.dumps(policy)
+        )
 
     @staticmethod
     def manage_access_point_policy(
@@ -1033,17 +1091,14 @@ class ShareManager:
         target_account_id: str,
         source_env_admin: str,
         target_env_admin: str,
-        folder_name: str,
+        s3_prefix: str,
         dataset: models.Dataset,
     ):
         access_point_arn = f"arn:aws:s3:{dataset.region}:{dataset.AwsAccountId}:accesspoint/{access_point_name}"
-        exceptions_roleId = [
-            f'{item}:*' for item in [
-                SessionHelper.get_role_id(source_account_id, 'dataallPivotRole'),
-                SessionHelper.get_role_id(source_account_id, dataset_admin),
-                SessionHelper.get_role_id(source_account_id, source_env_admin)
-            ]
-        ]
+        exceptions_roleId = [f'{item}:*' for item in SessionHelper.get_role_ids(
+            source_account_id,
+            [dataset_admin, source_env_admin, SessionHelper.get_delegation_role_arn(source_account_id)]
+        )]
         admin_statement = {
             "Sid": "AllowAllToAdmin",
             "Effect": "Allow",
@@ -1057,47 +1112,75 @@ class ShareManager:
             }
         }
         existing_policy = S3.get_access_point_policy(source_account_id, access_point_name)
+        # requester will use this role to access resources
         target_env_admin_id = SessionHelper.get_role_id(target_account_id, target_env_admin)
+        print(target_env_admin_id)
         if existing_policy:
-            pass
+            existing_policy = json.loads(existing_policy)
+            # sid_list = [item["Sid"] for item in existing_policy["Statement"]]
+            statements = {item["Sid"]: item for item in existing_policy["Statement"]}
+            if target_env_admin_id in statements.keys():
+                prefix_list = statements[f"{target_env_admin_id}0"]["Condition"]["StringLike"]["s3:prefix"]
+                if s3_prefix not in prefix_list:
+                    prefix_list.append(f"{s3_prefix}/*")
+                    statements[f"{target_env_admin_id}1"]["Resource"].append(f"{access_point_arn}/object/{s3_prefix}/*")
+            else:
+                additional_policy = S3.generate_access_point_policy_template(
+                    target_env_admin_id,
+                    access_point_arn,
+                    s3_prefix,
+                )
+                existing_policy["Statement"].extend(additional_policy["Statement"])
+            access_point_policy = existing_policy
         else:
-            access_point_policy = {
-                'Version': '2012-10-17',
-                "Statement": [
-                    {
-                        "Sid": "AllowListFolderToRole",
-                        "Effect": "Allow",
-                        "Principal": {
-                            "AWS": f"arn:aws:iam::{target_account_id}:root"
-                        },
-                        "Action": "s3:ListBucket",
-                        "Resource": f"{access_point_arn}",
-                        "Condition": {
-                            "StringLike": {
-                                "s3:prefix": f"{folder_name}/*",
-                                "aws:userId": [f"{target_env_admin_id}:*"]
-                            }
-                        }
+            print(target_env_admin_id)
+            print(access_point_arn)
+            print(s3_prefix)
+            access_point_policy = S3.generate_access_point_policy_template(
+                target_env_admin_id,
+                access_point_arn,
+                s3_prefix,
+            )
+        access_point_policy["Statement"].append(admin_statement)
+        print("attaching policy to access point")
+        print(access_point_policy)
+        S3.attach_access_point_policy(source_account_id, access_point_name, json.dumps(access_point_policy))
+
+    @staticmethod
+    def update_dataset_bucket_key_policy(
+        source_account_id: str,
+        target_account_id: str,
+        target_env_admin: str,
+        dataset: models.Dataset,
+    ):
+        key_alias = f"alias/{dataset.KmsAlias}"
+        kms_keyId = KMS.get_key_id(source_account_id, key_alias)
+        existing_policy = KMS.get_key_policy(source_account_id, kms_keyId, "default")
+        target_env_admin_id = SessionHelper.get_role_id(target_account_id, target_env_admin)
+        if existing_policy and f'{target_env_admin_id}:*' not in existing_policy:
+            policy = json.loads(existing_policy)
+            policy["Statement"].append(
+                {
+                    "Sid": f"{target_env_admin_id}",
+                    "Effect": "Allow",
+                    "Principal": {
+                        "AWS": "*"
                     },
-                    {
-                        "Sid": "AllowReadAccessToRole",
-                        "Effect": "Allow",
-                        "Principal": {
-                            'AWS': f'arn:aws:iam::{target_account_id}:root'
-                        },
-                        "Action": "s3:GetObject",
-                        "Resource": f"{access_point_arn}/object/{folder_name}/*",
-                        "Condition": {
-                            "StringLike": {
-                                "aws:userId": [f"{target_env_admin_id}:*"]
-                            }
+                    "Action": "kms:Decrypt",
+                    "Resource": "*",
+                    "Condition": {
+                        "StringLike": {
+                            "aws:userId": f"{target_env_admin_id}:*"
                         }
                     }
-                ]
-            }
-        access_point_policy["Statement"].append(admin_statement)
-        print(json.dumps(access_point_policy))
-        # S3.attach_access_point_policy(source_account_id, access_point_name, json.dumps(access_point_policy))
+                }
+            )
+            KMS.put_key_policy(
+                source_account_id,
+                kms_keyId,
+                "default",
+                json.dumps(policy)
+            )
 
 
 if __name__ == '__main__':

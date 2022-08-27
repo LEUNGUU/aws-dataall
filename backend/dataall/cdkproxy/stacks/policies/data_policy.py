@@ -72,7 +72,6 @@ class DataPolicy:
                         f'arn:aws:s3:{self.region}:{self.account}:storage-lens/*',
                         f'arn:aws:s3:us-west-2:{self.account}:async-request/mrap/*/*',
                         f'arn:aws:s3:{self.region}:{self.account}:accesspoint/*',
-                        'arn:aws:s3:*:*:accesspoint/*',
                         f'arn:aws:s3:::{self.resource_prefix}*/*',
                         f'arn:aws:s3:::{self.resource_prefix}*',
                     ],

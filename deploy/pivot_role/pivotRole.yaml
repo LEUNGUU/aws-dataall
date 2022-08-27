@@ -624,6 +624,11 @@ Resources:
               - 'iam:ListRoles'
             Effect: Allow
             Resource: '*'
+          - Sid: IAMPutRolePolicy
+            Action:
+              - 'iam:PutRolePolicy'
+            Effect: Allow
+            Resource: '*'
           - Sid: IAMPassRole
             Action:
               - 'iam:Get*'

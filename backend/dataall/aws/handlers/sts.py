@@ -131,6 +131,8 @@ class SessionHelper:
         json_string_with_temp_credentials += '"sessionToken":"' + c.token + '"'
         json_string_with_temp_credentials += '}'
 
+        print(json_string_with_temp_credentials)
+
         request_parameters = '?Action=getSigninToken'
         # request_parameters = "&SessionDuration=43200"
         request_parameters += '&Session=' + urllib.parse.quote_plus(

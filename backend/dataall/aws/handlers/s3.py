@@ -138,3 +138,84 @@ class S3:
                 f'S3 bucket access point policy creation failed : {e}'
             )
             raise e
+
+    @staticmethod
+    def update_target_role_policy(
+        account_id: str,
+        role_name: str,
+        policy_name: str,
+        policy: str,
+    ):
+        try:
+            aws_session = SessionHelper.remote_session(accountid=account_id)
+            iam_client = aws_session.client('iam')
+            iam_client.put_role_policy(
+                RoleName=role_name,
+                PolicyName=policy_name,
+                PolicyDocument=policy,
+            )
+        except Exception as e:
+            log.error(
+                f'Failed to add S3 bucket access to target role {account_id}/{role_name} : {e}'
+            )
+            raise e
+
+    @staticmethod
+    def get_target_role_policy(
+        account_id: str,
+        role_name: str,
+        policy_name: str,
+    ):
+        try:
+            aws_session = SessionHelper.remote_session(accountid=account_id)
+            iam_client = aws_session.client('iam')
+            response = iam_client.get_role_policy(
+                RoleName=role_name,
+                PolicyName=policy_name,
+            )
+            return response["PolicyDocument"]
+        except Exception:
+            return None
+
+    @staticmethod
+    def generate_access_point_policy_template(
+        principal_id: str,
+        access_point_arn: str,
+        s3_prefix: str,
+    ):
+        policy = {
+            'Version': '2012-10-17',
+            "Statement": [
+                {
+                    "Sid": f"{principal_id}0",
+                    "Effect": "Allow",
+                    "Principal": {
+                        "AWS": "*"
+                    },
+                    "Action": "s3:ListBucket",
+                    "Resource": f"{access_point_arn}",
+                    "Condition": {
+                        "StringLike": {
+                            "s3:prefix": [f"{s3_prefix}/*"],
+                            "aws:userId": [f"{principal_id}:*"]
+                        }
+                    }
+                },
+                {
+                    "Sid": f"{principal_id}1",
+                    "Effect": "Allow",
+                    "Principal": {
+                        "AWS": "*"
+                    },
+                    "Action": "s3:GetObject",
+                    "Resource": [f"{access_point_arn}/object/{s3_prefix}/*"],
+                    "Condition": {
+                        "StringLike": {
+                            "aws:userId": [f"{principal_id}:*"]
+                        }
+                    }
+                }
+            ]
+
+        }
+        return policy
